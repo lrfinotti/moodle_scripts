@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: moodle_update
+# Description: Automates updating an existing Moodle instance within its current
+#              release branch (e.g., fetching point releases/security patches).
+#
+# Process Workflow:
+#   1. Prompt operator to verify or create a fresh backup (`moodle_backup`).
+#   2. Run CLI Cron task.
+#   3. Execute environment checks.
+#   4. Place Moodle into Maintenance Mode.
+#   5. Pull Git updates & execute database upgrade scheme.
+#   6. Disable Maintenance Mode (handles failure cleanup via trap).
+#   7. Restrict sensitive file permissions & purge caches.
+#
+# Credit: Bases on script by Ken Task
+# ==============================================================================
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+BACKUP_DIR="/home/finottia/backup"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Helper function: Interactive continuation prompt
+cont() {
+    local response
+    read -rp "Continue? (y/N) " response
+    case "$response" in
+        [yY][eE][sS]|[yY])
+            echo -e "Proceeding...\n"
+            ;;
+        *)
+            echo -e "Quitting!\n"
+            exit 1
+            ;;
+    esac
+}
+
+# Cleanup trap: Ensures Maintenance Mode is disabled if the script is interrupted or fails
+cleanup() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo -e "\n[!] Script failed or was interrupted. Disabling Maintenance Mode..." >&2
+        /usr/local/bin/php admin/cli/maintenance.php --disable || true
+    fi
+}
+trap cleanup EXIT
+
+# --- Pre-Flight Checks ---
+
+# Verify execution context (must be inside Moodle root)
+if [ ! -f "version.php" ] || [ ! -d "admin/cli" ]; then
+    echo "Error: This script must be executed from the root directory of your Moodle installation." >&2
+    exit 1
+fi
+
+# Dynamically extract current version info from version.php
+CURRENT_RELEASE=$(grep -F "\$release" version.php | cut -d\' -f2)
+echo -e "Current Moodle Release: ${CURRENT_RELEASE:-Unknown}\n"
+
+# --- Step 1: Backup Verification ---
+echo "Recent backup files in $BACKUP_DIR:"
+if [ -d "$BACKUP_DIR" ]; then
+    ls -ltrhH "$BACKUP_DIR"
+else
+    echo "Warning: Backup directory $BACKUP_DIR does not exist."
+fi
+echo ""
+cont
+
+read -rp "Do you want to run the backup script now? (Y/n) " response
+if [[ "$response" =~ ^[nN]$ ]]; then
+    echo "Skipping automated backup..."
+else
+    # Look for the backup script in the current folder or script path
+    if [ -x "$SCRIPT_DIR/moodle_backup" ]; then
+        BACKUP_EXEC="$SCRIPT_DIR/moodle_backup"
+    elif [ -x "./moodle_backup" ]; then
+        BACKUP_EXEC="./moodle_backup"
+    else
+        BACKUP_EXEC="moodle_backup"
+    fi
+
+    echo "Running backup script ($BACKUP_EXEC)..."
+    if "$BACKUP_EXEC"; then
+        echo -e "\nBackup completed successfully!\n"
+    else
+        echo "Error: Backup script failed! Aborting update." >&2
+        exit 1
+    fi
+fi
+
+# --- Step 2: Pre-Update Maintenance & Environment Checks ---
+echo "Running CLI Cron..."
+/usr/local/bin/php admin/cli/cron.php
+echo -e "Done!\n"
+cont
+
+echo -e "Running environment checks...\n"
+/usr/local/bin/php admin/cli/checks.php -v --filter=environment
+echo ""
+echo -e "Are environmental checks satisfactory?\n"
+cont
+
+# --- Step 3: Enable Maintenance Mode & Apply Update ---
+echo "Entering Maintenance Mode..."
+/usr/local/bin/php admin/cli/maintenance.php --enable
+echo -e "Done!\n"
+
+echo "Pulling latest Git updates..."
+git pull
+
+echo "Applying Moodle schema/database upgrades..."
+/usr/local/bin/php admin/cli/upgrade.php --non-interactive
+echo -e "Done!\n"
+
+# --- Step 4: Finalize & Restore Normal Operation ---
+echo "Disabling Maintenance Mode..."
+/usr/local/bin/php admin/cli/maintenance.php --disable
+echo -e "Done!\n"
+
+echo "Securing file permissions..."
+# Protect sensitive repository meta-directories from public reading
+for item in .git .github .gitattributes .gitignore up; do
+    if [ -e "$item" ]; then
+        chmod go-rwx "$item"
+    fi
+done
+echo -e "Done!\n"
+
+echo "Purging Moodle caches..."
+/usr/local/bin/php admin/cli/purge_caches.php
+echo -e "Done!\n"
+
+# Display updated release version
+NEW_RELEASE=$(grep -F "\$release" version.php | cut -d\' -f2)
+echo "=========================================="
+echo "Update Complete!"
+echo "New Release: $NEW_RELEASE"
+echo "=========================================="

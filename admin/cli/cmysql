@@ -1,0 +1,18 @@
+#! /bin/bash
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+# File with the credenditals for the data base.  It must contain
+# DB_USER (username), DB_PASS (password), DB_NAME (database name).
+CRED_FILE="/home/finottia/.credentials/moodle_lom"
+
+# Validate Credentials File
+if [ ! -f "$CRED_FILE" ]; then
+    echo "Error: Credentials file not found at $CRED_FILE" >&2
+    exit 1
+fi
+
+source "$CRED_FILE"
+
+MYSQL_PWD="$DB_PASS" /usr/bin/mariadb -u "$DB_NAME"

@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: delete_moodle_files
+# Description: Processes a file listing produced by `getfiles` (or TSV DB dump):
+#              1. Deletes database records from `mdla0_files` for specified IDs.
+#              2. Moves the physical file from Moodle's content-addressable storage
+#                 (`filedir/xx/yy/hash`) to a backup location.
+#              3. Creates a safe symbolic link in the backup location mapping
+#                 the hash to its original human-readable filename (using link_safe).
+#
+# Requirements:
+#   - Database credentials file (~/.credentials/moodle_lom) defining:
+#       DB_USER="your_user"
+#       DB_PASS="your_password"
+#       DB_NAME="your_db_name"
+#
+# Usage:
+#   process_moodle_files.sh <input_file> [<backup_directory>]
+#   Example:
+#   process_moodle_files.sh mp4_files.txt /home/finottia/moodle_videos_backup
+# ==============================================================================
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+# --- Argument Validation ---
+if [ "$#" -lt 1 ]; then
+    echo "Usage: $0 <input_file> [backup_directory]" >&2
+    echo "Error: Please provide a file containing query data (e.g., from 'getfiles')." >&2
+    exit 1
+fi
+
+# Prefix used by Moodle. Find it in config.php, e.g.:
+# $CFG->prefix    = 'mdla0_';
+MOODLE_TABLE_PREFIX="mdla0"
+
+INPUT_FILE="$1"
+BACKUP_DIR="${2:-/home/finottia/moodle_videos_backup/}"
+CRED_FILE="/home/finottia/.credentials/moodle_lom"
+MOODLE_DATA_FOLDER="/home/finottia/moodledata_lom"
+
+TABLE_NAME="${MOODLE_TABLE_PREFIX}_files"
+
+# Validate Input File
+if [ ! -f "$INPUT_FILE" ]; then
+    echo "Error: Input file '$INPUT_FILE' does not exist." >&2
+    exit 1
+fi
+
+# Validate Database Credentials
+if [ ! -f "$CRED_FILE" ]; then
+    echo "Error: Credentials file not found at $CRED_FILE" >&2
+    exit 1
+fi
+
+source "$CRED_FILE"
+
+# Ensure Backup Destination Directory Exists
+mkdir -p "$BACKUP_DIR"
+
+# --- Helper Function: Collision-Safe Symlinking ---
+link_safe() {
+    local src="$1"
+    local target="$2"
+
+    local destination="$target"
+    local count=1
+
+    # Loop as long as the target path exists (as a file, directory, or symlink)
+    while [ -e "$destination" ] || [ -L "$destination" ]; do
+        destination="${target}-${count}"
+        ((count++))
+    done
+
+    # Create the symbolic link
+    ln -s "$src" "$destination" && echo "Linked '$src' -> '$destination'"
+}
+
+# --- Main Processing Loop ---
+
+# Extract unique content hashes (Column 2 of TSV output, skipping header)
+HASHES=$(awk -F'\t' 'NR>1 {print $2}' "$INPUT_FILE" | sort -u)
+
+for hash in $HASHES; do
+    # Skip empty lines or invalid short hashes
+    [ -z "$hash" ] && continue
+
+    # Extract the original filename corresponding to this hash (Column 3 of TSV)
+    file_name=$(awk -F'\t' -v h="$hash" '$2 == h {print $3; exit}' "$INPUT_FILE")
+
+    echo "=================================================="
+    echo "FILE: ${file_name}"
+    echo "HASH: ${hash}"
+    echo "=================================================="
+
+    # 1. Delete Database Records associated with this hash
+    # Extract all matching IDs (Column 1 of TSV)
+    matching_ids=$(awk -F'\t' -v h="$hash" '$2 == h {print $1}' "$INPUT_FILE")
+
+    for id in $matching_ids; do
+        echo "Deleting table entry ID: ${id} from ${TABLE_NAME}..."
+        MYSQL_PWD="$DB_PASS" mariadb -u "$DB_USER" -D "$DB_NAME" -e "DELETE FROM ${TABLE_NAME} WHERE id=${id};"
+        echo "Deletion command executed successfully."
+    done
+    echo ""
+
+    # 2. Locate and Move Physical File from Moodle Storage Tree
+    dir1="${hash:0:2}"
+    dir2="${hash:2:2}"
+    source_file_path="${MOODLE_DATA_FOLDER}/filedir/${dir1}/${dir2}/${hash}"
+
+    if [ -f "$source_file_path" ]; then
+        echo "Moving ${hash} to ${BACKUP_DIR}..."
+        mv -i "$source_file_path" "${BACKUP_DIR}/${hash}"
+        echo "Move executed successfully."
+    else
+        echo "Warning: File not found in Moodle storage at ${source_file_path}. Skipping file move."
+    fi
+    echo ""
+
+    # 3. Create Symlink in Backup Directory Mapping Hash to Human-Readable Filename
+    echo "Creating safe symlink in backup folder..."
+    (
+        cd "$BACKUP_DIR"
+        link_safe "$hash" "$file_name"
+    )
+    echo "--------------------------------------------------"
+    echo ""
+done
+
+echo "Processing completed successfully!"

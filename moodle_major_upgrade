@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: moodle_major_upgrade
+# Description: Performs a major release upgrade of Moodle by tracking and
+#              switching to a new stable Git branch (e.g., MOODLE_500_STABLE).
+#
+# Process Workflow:
+#   1. Display current release and prompt operator for backup verification/execution.
+#   2. Run CLI Cron task and pre-upgrade environment checks.
+#   3. Fetch latest remotes and verify target branch exists.
+#   4. Place Moodle into Maintenance Mode.
+#   5. Track/checkout new major branch & pull latest code.
+#   6. Execute non-interactive database schema upgrade.
+#   7. Disable Maintenance Mode (handles failure cleanup via trap).
+#   8. Purge Moodle caches and display new release string.
+#
+# Credit: Bases on script by Ken Task
+# ==============================================================================
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+# Target Major Version Configuration
+NEW_VERSION="500"
+NEW_VERSION_NAME="5.0"
+TARGET_BRANCH="MOODLE_${NEW_VERSION}_STABLE"
+
+BACKUP_DIR="/home/finottia/backup"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Helper function: Interactive continuation prompt
+cont() {
+    local response
+    read -rp "Continue? (y/N) " response
+    case "$response" in
+        [yY][eE][sS]|[yY])
+            echo -e "Proceeding...\n"
+            ;;
+        *)
+            echo -e "Quitting!\n"
+            exit 1
+            ;;
+    esac
+}
+
+# Cleanup trap: Disables Maintenance Mode if script fails mid-upgrade
+cleanup() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo -e "\n[!] Upgrade failed or was interrupted. Disabling Maintenance Mode..." >&2
+        /usr/local/bin/php admin/cli/maintenance.php --disable || true
+    fi
+}
+trap cleanup EXIT
+
+# --- Pre-Flight Checks ---
+
+# Verify execution context (must be inside Moodle root)
+if [ ! -f "version.php" ] || [ ! -d "admin/cli" ]; then
+    echo "Error: This script must be executed from the root directory of your Moodle installation." >&2
+    exit 1
+fi
+
+echo -e "Target Major Release Version: ${NEW_VERSION_NAME} (${TARGET_BRANCH})\n"
+echo "Current Version:"
+grep -F "\$release" version.php || echo "Unable to read current release version."
+echo ""
+
+# --- Step 1: Backup Verification ---
+echo "Recent backup files in $BACKUP_DIR:"
+if [ -d "$BACKUP_DIR" ]; then
+    ls -ltrhH "$BACKUP_DIR"
+else
+    echo "Warning: Backup directory $BACKUP_DIR does not exist."
+fi
+echo ""
+cont
+
+read -rp "Do you want to run the backup script now? (Y/n) " response
+if [[ "$response" =~ ^[nN]$ ]]; then
+    echo "Skipping automated backup..."
+else
+    # Locate the backup script executable
+    if [ -x "$SCRIPT_DIR/moodle_backup" ]; then
+        BACKUP_EXEC="$SCRIPT_DIR/moodle_backup"
+    elif [ -x "./moodle_backup" ]; then
+        BACKUP_EXEC="./moodle_backup"
+    else
+        BACKUP_EXEC="moodle_backup"
+    fi
+
+    echo "Running backup script ($BACKUP_EXEC)..."
+    if "$BACKUP_EXEC"; then
+        echo -e "\nBackup completed successfully!\n"
+    else
+        echo "Error: Backup script failed! Aborting upgrade." >&2
+        exit 1
+    fi
+fi
+
+# --- Step 2: Maintenance Cron & Environment Check ---
+echo "Running CLI Cron..."
+/usr/local/bin/php admin/cli/cron.php
+echo -e "Done!\n"
+
+echo -e "Running environment checks for ${NEW_VERSION_NAME} compatibility...\n"
+/usr/local/bin/php admin/cli/checks.php -v --filter=environment
+echo ""
+echo -e "Are environmental checks (PHP/DB requirements) satisfactory?\n"
+cont
+
+# --- Step 3: Enable Maintenance Mode & Git Branch Switch ---
+echo "Setting Maintenance Mode..."
+/usr/local/bin/php admin/cli/maintenance.php --enable
+echo -e "Done!\n"
+
+echo "Fetching remote Git branches..."
+git fetch origin
+
+# Safely check out or track the target branch
+if git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
+    echo "Switching to existing local branch '$TARGET_BRANCH'..."
+    git checkout "$TARGET_BRANCH"
+else
+    echo "Tracking and checking out new branch '$TARGET_BRANCH'..."
+    git checkout -b "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+fi
+
+echo "Pulling latest code for $TARGET_BRANCH..."
+git pull origin "$TARGET_BRANCH"
+echo -e "Done!\n"
+cont
+
+# --- Step 4: Database Upgrade & Post-Upgrade Actions ---
+echo "Executing Moodle database upgrade..."
+/usr/local/bin/php admin/cli/upgrade.php --non-interactive
+echo -e "Done!\n"
+
+echo "Unsetting Maintenance Mode..."
+/usr/local/bin/php admin/cli/maintenance.php --disable
+echo -e "Done!\n"
+
+echo "Purging Moodle caches..."
+/usr/local/bin/php admin/cli/purge_caches.php
+echo -e "Done!\n"
+
+# Summary
+NEW_RELEASE=$(grep -F "\$release" version.php | cut -d\' -f2)
+echo "=========================================="
+echo "Major Upgrade Complete!"
+echo "New Release Version: $NEW_RELEASE"
+echo "=========================================="

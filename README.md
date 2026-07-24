@@ -1,2 +1,3 @@
-# moodle_scripts
-Scripts for Moodle administration
+# Moodle Scripts
+
+Series of scripts for Moodle administration.  (Most bases on scripts by Ken Task.)

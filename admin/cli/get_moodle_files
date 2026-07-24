@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: get_moodle_files
+# Description: Queries the Moodle database for files matching a specific file
+#              extension, outputs their metadata (id, hash, filename, size, etc.)
+#              sorted by file size in descending order, and displays a count.
+#
+# Requirements:
+#   - Database credentials file (~/.credentials/moodle_lom) defining:
+#       DB_USER="your_user"
+#       DB_PASS="your_password"
+#       DB_NAME="your_db_name"
+#
+# Usage:
+#   get_moodle_files                     # Queries '.mbz' files -> mbz_files.txt
+#   get_moodle_files mp4                 # Queries '.mp4' files -> mp4_files.txt
+#   get_moodle_files pdf my_pdfs.txt     # Queries '.pdf' files -> my_pdfs.txt
+#
+# Credit: Bases on script by Ken Task
+# ==============================================================================
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+# Path to database credentials
+CRED_FILE="/home/finottia/.credentials/moodle_lom"
+
+# Prefix used by Moodle. Find it in config.php, e.g.:
+# $CFG->prefix    = 'mdla0_';
+MOODLE_TABLE_PREFIX="mdla0"
+
+# Validate Credentials File
+if [ ! -f "$CRED_FILE" ]; then
+    echo "Error: Credentials file not found at $CRED_FILE" >&2
+    exit 1
+fi
+
+source "$CRED_FILE"
+
+# Parse Command-Line Arguments
+# Arg 1: Target file extension (Default: "mbz")
+EXTENSION="${1:-mbz}"
+
+# Arg 2: Output destination file (Default: "<extension>_files.txt")
+DEST_FILE="${2:-${EXTENSION}_files.txt}"
+
+# SQL Query Construction
+QUERY="SELECT id, contenthash, filename, filearea, filesize, userid FROM ${MOODLE_TABLE_PREFIX}_files WHERE filename LIKE '%.${EXTENSION}' ORDER BY filesize DESC;"
+
+echo "Querying database '$DB_NAME' for *.${EXTENSION} files..."
+
+# Execute MariaDB Query & Output to Destination File
+MYSQL_PWD="$DB_PASS" /usr/bin/mariadb -u "$DB_USER" -D "$DB_NAME" -e "$QUERY" > "$DEST_FILE"
+
+# Print Results to Terminal
+cat "$DEST_FILE"
+echo ""
+
+# Calculate and display the number of SQL data rows (total lines minus 1 header line)
+TOTAL_LINES=$(wc -l < "$DEST_FILE")
+
+if [ "$TOTAL_LINES" -gt 0 ]; then
+    ENTRY_COUNT=$(( TOTAL_LINES - 1 ))
+else
+    ENTRY_COUNT=0
+fi
+
+echo "Number of entries: $ENTRY_COUNT"
+echo "Results saved to: $DEST_FILE"

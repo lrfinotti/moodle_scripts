@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: moodle_backup
+# Description: Performs a complete backup of a Moodle site instance, including:
+#              1. Full Moodle core code directory
+#              2. Moodle data file storage (`filedir`)
+#              3. Compressed MariaDB/MySQL database dump
+#
+# Requirements:
+#   - Must be executed inside the root directory of the Moodle installation
+#     (or MOODLE_CODE_DIR must point to it) so version.php can be read.
+#   - Database credentials file (~/.credentials/moodle_lom) defining:
+#       DB_USER="your_user"
+#       DB_PASS="your_password"
+#       DB_NAME="your_db_name"
+#
+# Credit: Bases on script by Ken Task
+# ==============================================================================
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+# Configuration Paths
+CRED_FILE="/home/finottia/.credentials/moodle_lom"
+BACKUP_FOLDER="/home/finottia/backup"
+MOODLE_DATA_FOLDER="/home/finottia/moodledata_lom"
+MOODLE_CODE_DIR="$PWD"
+
+# 1. Validate Credentials File Existence
+if [ ! -f "$CRED_FILE" ]; then
+    echo "Error: Credentials file not found at $CRED_FILE" >&2
+    exit 1
+fi
+
+source "$CRED_FILE"
+
+# 2. Validate Moodle Root Directory
+if [ ! -f "$MOODLE_CODE_DIR/version.php" ]; then
+    echo "Error: 'version.php' not found in $MOODLE_CODE_DIR." >&2
+    echo "Please run this script from the Moodle installation root directory." >&2
+    exit 1
+fi
+
+# Ensure backup destination directory exists
+mkdir -p "$BACKUP_FOLDER"
+
+# Extract Moodle Version number (e.g., 4.5.12)
+VERSION=$(grep -F "\$release" "$MOODLE_CODE_DIR/version.php" | cut -d\' -f2 | cut -d' ' -f1)
+TAG="${VERSION}--$(date +%Y-%m-%d--%H-%M-%S)"
+
+# --- Step 1: Backup Moodle Codebase ---
+echo "Backing up code directory ($MOODLE_CODE_DIR)..."
+tar -czvf "$BACKUP_FOLDER/code-$TAG.tgz" -C "$MOODLE_CODE_DIR" .
+echo "Code backup completed successfully!"
+echo ""
+
+# --- Step 2: Backup Moodle Data Files ---
+# TOO LARGE???
+# echo "Backing up files in moodledata directory..."
+# if [ -d "$MOODLE_DATA_FOLDER/filedir" ]; then
+#     tar czvf "$BACKUP_FOLDER/data-min-$TAG.tgz" -C "$MOODLE_DATA_FOLDER" filedir
+#     echo "Data backup completed successfully!"
+# else
+#     echo "Warning: $MOODLE_DATA_FOLDER/filedir does not exist. Skipping filedir archive." >&2
+# fi
+# echo ""
+
+
+
+# --- Step 3: Database Dump ---
+echo "Backing up database ($DB_NAME)..."
+# Export password via environment variable to avoid process table exposure
+MYSQL_PWD="$DB_PASS" /usr/bin/mariadb-dump -u "$DB_USER" "$DB_NAME" | gzip > "${BACKUP_FOLDER}/db-${TAG}.sql.gz"
+echo "Database backup completed successfully!"
+echo ""
+
+# --- Step 4: Storage & Summary Reports ---
+echo "=========================================="
+echo "Recent Backup Files:"
+ls -lhrtH "$BACKUP_FOLDER"
+echo ""
+
+echo "Disk Free Space Summary:"
+df -h "$BACKUP_FOLDER"
+echo ""
+
+echo "Total Space Used for Backups:"
+du -sh "$BACKUP_FOLDER"
+echo "=========================================="
