@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+if [ "$#" -lt 1 ]; then
+    echo "Usage: $0 <id> [backup_directory]" >&2
+    echo "Error: Please provide the id for the course the be backed up." >&2
+    exit 1
+fi
+
+ID="$1"
+DEST="${2:-/home/finottia/backups_moodle/}"
+
+# Ensure Backup Destination Directory Exists
+mkdir -p "$DEST"
+
+# run command
+/usr/local/bin/php backup.php --courseid="$ID" --destination="$DEST"
