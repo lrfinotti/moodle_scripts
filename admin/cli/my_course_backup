@@ -1,16 +1,55 @@
 #!/usr/bin/env bash
 
+# Default destination
+DEST="/home/finottia/backups_moodle/"
+
+# Parse options (-d or --destination)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--destination)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        DEST="$2"
+        shift 2
+      else
+        echo "Error: Option $1 requires a non-empty directory path." >&2
+        exit 1
+      fi
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Error: Unknown option $1" >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# Ensure at least one course ID was provided
 if [ "$#" -lt 1 ]; then
-    echo "Usage: $0 <id> [backup_directory]" >&2
-    echo "Error: Please provide the id for the course the be backed up." >&2
+    echo "Usage: $0 [-d|--destination <backup_directory>] <course_id_1> [course_id_2 ...]" >&2
+    echo "Error: Please provide at least one course ID." >&2
     exit 1
 fi
 
-ID="$1"
-DEST="${2:-/home/finottia/backups_moodle/}"
-
-# Ensure Backup Destination Directory Exists
+# Ensure Destination Directory Exists
 mkdir -p "$DEST"
 
-# run command
-/usr/local/bin/php backup.php --courseid="$ID" --destination="$DEST"
+echo ""
+
+# Loop through all remaining arguments (course IDs) and run the backup
+for ID in "$@"; do
+    echo "Backing up course ID: $ID to $DEST..."
+    /usr/local/bin/php backup.php --courseid="$ID" --destination="$DEST"
+
+    if [ $? -eq 0 ]; then
+        echo -e "\nCourse $ID backed up successfully.\n"
+    else
+        echo -e "\nError backing up course $ID.\n" >&2
+    fi
+    echo -e "------------------------------------------------------\n"
+done
