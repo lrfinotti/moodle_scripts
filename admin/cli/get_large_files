@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: get_large_files
+# Description: Queries the Moodle database for files greater than or equal to a
+#              specified size threshold, outputs their metadata (id, hash,
+#              filename, filearea, filesize, size in MB, and userid) sorted by
+#              file size in descending order using vertical formatting.
+#
+# Requirements:
+#   - Database credentials file (/home/finottia/.credentials/moodle_lom) defining:
+#       DB_USER="your_user"
+#       DB_PASS="your_password"
+#       DB_NAME="your_db_name"
+#       DB_TABLE_PREFIX="mdl"
+#   - MariaDB client CLI installed at /usr/bin/mariadb
+#
+# Usage:
+#   ./get_large_moodle_files <size>[M|G|K|B]
+#
+# Examples:
+#   ./get_large_moodle_files 100M    # Files >= 100 Megabytes
+#   ./get_large_moodle_files 2G      # Files >= 2 Gigabytes
+#   ./get_large_moodle_files 500K    # Files >= 500 Kilobytes
+#   ./get_large_moodle_files 1048576 # Files >= 1048576 Bytes
+# ==============================================================================
+
+# Exit on error or unset variable
+set -euo pipefail
+
+# --- Configuration ---
+# Path to database credentials
+CRED_FILE="/home/finottia/.credentials/moodle_lom"
+
+# Validate Credentials File
+if [ ! -f "$CRED_FILE" ]; then
+    echo "Error: Credentials file not found at $CRED_FILE" >&2
+    exit 1
+fi
+
+source "$CRED_FILE"
+
+# --- Usage Helper ---
+usage() {
+    echo "Usage: $0 <size>[M|G|K|B]"
+    echo "Examples:"
+    echo "  $0 100M    # Files >= 100 Megabytes"
+    echo "  $0 2G      # Files >= 2 Gigabytes"
+    echo "  $0 500K    # Files >= 500 Kilobytes"
+    echo "  $0 1048576 # Files >= 1048576 Bytes"
+    exit 1
+}
+
+# Ensure at least one argument is provided
+if [ $# -lt 1 ]; then
+    usage
+fi
+
+INPUT_SIZE="$1"
+
+# --- Parse Input Size to Bytes ---
+# Extract number and unit using regex
+if [[ "$INPUT_SIZE" =~ ^([0-9]+)([kKmMgG]?)[bB]?$ ]]; then
+    VALUE="${BASH_REMATCH[1]}"
+    UNIT="${BASH_REMATCH[2]}"
+
+    case "${UNIT,,}" in # Conver unit to lowercase
+        g)
+            BYTES=$(( VALUE * 1024 * 1024 * 1024 ))
+            ;;
+        m)
+            BYTES=$(( VALUE * 1024 * 1024 ))
+            ;;
+        k)
+            BYTES=$(( VALUE * 1024 ))
+            ;;
+        "")
+            BYTES=$(( VALUE ))
+            ;;
+        *)
+            echo "Error: Invalid unit specified."
+            usage
+            ;;
+    esac
+else
+    echo "Error: Invalid size format '$INPUT_SIZE'."
+    usage
+fi
+
+echo "Querying Moodle database for files >= $INPUT_SIZE ($BYTES bytes)..."
+echo "-----------------------------------------------------------------"
+
+# --- Execute MariaDB Query ---
+MYSQL_PWD="$DB_PASS" /usr/bin/mariadb -u "$DB_USER" -D "$DB_NAME" --vertical <<EOF
+SELECT
+    id,
+    contenthash,
+    filename,
+    filearea,
+    filesize,
+    ROUND(filesize / 1024 /1024, 2) AS size_mb,
+    userid
+FROM
+    ${DB_TABLE_PREFIX}_files
+WHERE
+    filesize >= $BYTES
+    AND filename != '.'
+ORDER BY
+    filesize DESC;
+EOF

@@ -26,7 +26,7 @@ NEW_VERSION="500"
 NEW_VERSION_NAME="5.0"
 TARGET_BRANCH="MOODLE_${NEW_VERSION}_STABLE"
 
-BACKUP_DIR="/home/finottia/backup"
+BACKUP_DIR="/home/finottia/moodle_full_backup"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Helper function: Interactive continuation prompt

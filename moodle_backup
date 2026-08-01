@@ -14,8 +14,6 @@
 #       DB_USER="your_user"
 #       DB_PASS="your_password"
 #       DB_NAME="your_db_name"
-#
-# Credit: Bases on script by Ken Task
 # ==============================================================================
 
 # Abort immediately if any command fails or if an undefined variable is used
@@ -23,7 +21,7 @@ set -euo pipefail
 
 # Configuration Paths
 CRED_FILE="/home/finottia/.credentials/moodle_lom"
-BACKUP_FOLDER="/home/finottia/backup"
+BACKUP_FOLDER="/home/finottia/moodle_full_backup"
 MOODLE_DATA_FOLDER="/home/finottia/moodledata_lom"
 MOODLE_CODE_DIR="$PWD"
 
@@ -57,14 +55,15 @@ echo ""
 
 # --- Step 2: Backup Moodle Data Files ---
 # TOO LARGE???
-# echo "Backing up files in moodledata directory..."
-# if [ -d "$MOODLE_DATA_FOLDER/filedir" ]; then
-#     tar czvf "$BACKUP_FOLDER/data-min-$TAG.tgz" -C "$MOODLE_DATA_FOLDER" filedir
-#     echo "Data backup completed successfully!"
-# else
-#     echo "Warning: $MOODLE_DATA_FOLDER/filedir does not exist. Skipping filedir archive." >&2
-# fi
-# echo ""
+echo "Backing up files in moodledata directory..."
+if [ -d "$MOODLE_DATA_FOLDER/filedir" ]; then
+    # tar czvf "$BACKUP_FOLDER/data-min-$TAG.tgz" -C "$MOODLE_DATA_FOLDER" filedir
+    moodle_backup_data  # use new script!
+    echo "Data backup completed successfully!"
+else
+    echo "Warning: $MOODLE_DATA_FOLDER/filedir does not exist. Skipping filedir archive." >&2
+fi
+echo ""
 
 
 
@@ -79,6 +78,7 @@ echo ""
 echo "=========================================="
 echo "Recent Backup Files:"
 ls -lhrtH "$BACKUP_FOLDER"
+du -sh "$BACKUP_FOLDER/data"
 echo ""
 
 echo "Disk Free Space Summary:"

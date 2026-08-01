@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: get_orphan_details
+# Description: Takes the CSV output from find_orphan_files.sh (containing file paths,
+#              sizes, and optional status) and inspects each file. Outputs basic
+#              file metadata (hash name, human-readable size, MIME type, modification
+#              date) and extracts a content preview based on file type (Text, JSON,
+#              PDF, or Tar/Gzip archives).
+#
+# Requirements:
+#   - poppler-utils (for the 'pdftotext' command used in PDF preview).
+#   - file, tar, and coreutils installed.
+#
+# Usage:
+#   ./get_orphan_details <orphan_list_csv>
+#
+# Examples:
+#   ./find_orphan_files > orphans.csv
+#   ./get_orphan_details orphans.csv
+# ==============================================================================
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+# Check for input file argument
+if [[ $# -lt 1 || ! -f "$1" ]]; then
+    echo "Usage: $(basename "$0") <orphan_list_csv>" >&2
+    exit 1
+fi
+
+INPUT_FILE="$1"
+
+# Read CSV line by line safely, skipping the header line if present
+while IFS=',' read -r file size || [[ -n "$file" ]]; do
+    # Skip CSV header or empty lines
+    [[ "$file" == "file_path" || -z "$file" ]] && continue
+
+    # Strip any potential whitespace or trailing carriage returns
+    file="$(echo "$file" | xargs)"
+
+    if [[ ! -f "$file" ]]; then
+        echo "Warning: File $file does not exist or is unreadable. Skipping." >&2
+        continue
+    fi
+
+    hash=$(basename "$file")
+    size_h=$(ls -lh "$file" | awk '{print $5}')
+    type=$(file -b "$file")
+    date_time=$(date -r "$file" "+%m-%d-%Y %H:%M:%S")
+
+    echo -e "\n            File: ${hash}\n"
+    echo "Path: ${file}"
+    echo "Size: ${size_h}"
+    echo "Type: ${type}"
+    echo "Date: ${date_time}"
+    echo ""
+
+    # Preview contents based on file type
+    if [[ "$type" == *"ASCII text"* || "$type" == *"JSON data"* || "$type" == *"Unicode text"* ]]; then
+        echo "---------------------------------------------------------------------------"
+        echo -e "Content Preview:\n"
+        head -n 20 "$file"
+        echo ""
+        echo "---------------------------------------------------------------------------"
+
+    elif [[ "$type" == *"PDF document"* ]]; then
+        echo "---------------------------------------------------------------------------"
+        echo -e "Content Preview (PDF text extraction):\n"
+        if command -v pdftotext &>/dev/null; then
+            pdftotext "$file" - 2>/dev/null | head -n 20 || echo "[Unable to extract text from PDF]"
+        else
+            echo "[pdftotext command not found. Install poppler-utils to preview PDFs.]"
+        fi
+        echo ""
+        echo "---------------------------------------------------------------------------"
+
+    elif [[ "$type" == *"gzip compressed data"* ]]; then
+        echo "---------------------------------------------------------------------------"
+        echo -e "Archive Inspection:\n"
+        # Check if the archive contains Moodle backup structure
+        if tar -tzf "$file" 2>/dev/null | grep -q "moodle_backup.xml"; then
+            echo "Status: Valid Moodle Backup File (.mbz)"
+        else
+            echo "Status: Gzip archive (Not a standard Moodle backup). Archive contents:"
+            tar -tzvf "$file" 2>/dev/null | head -n 20 || echo "[Unable to list archive contents]"
+        fi
+        echo ""
+        echo "---------------------------------------------------------------------------"
+    fi
+
+    echo "##########################################################################"
+
+done < "$INPUT_FILE"

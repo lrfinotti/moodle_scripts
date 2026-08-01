@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script: moodle_backup_data
+#
+# Description:
+#   Backs up content from SOURCE_DIR into a timestamped directory inside DEST_DIR.
+#   - If DEST_DIR has previous backups, rsync uses --link-dest pointing to the
+#     most recent backup to create hard links for unchanged files, performing an
+#     efficient incremental backup.
+#   - If DEST_DIR contains no prior backups, it performs a full initial backup.
+#
+# Requirements:
+#   - rsync
+# ==============================================================================
+
+set -euo pipefail  # Exit on error, undefined vars, or pipe failures
+
+# ------------------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------------------
+SOURCE_DIR="$HOME/moodledata_lom/"
+DEST_DIR="$HOME/moodle_full_backup/data/"
+
+# Format backup folder as YYYY-MM-DD_HH-MM-SS (e.g., 2026-08-01_13-40-30)
+TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+TARGET_DIR="${DEST_DIR}/${TIMESTAMP}"
+SYMLINK_PATH="${DEST_DIR}/current"
+
+# ------------------------------------------------------------------------------
+# Validation & Pre-checks
+# ------------------------------------------------------------------------------
+if [[ ! -d "${SOURCE_DIR}" ]]; then
+  echo "Error: Source directory '${SOURCE_DIR}' does not exist." >&2
+  exit 1
+fi
+
+# Ensure destination root directory exists
+mkdir -p "${DEST_DIR}"
+
+# Ensure SOURCE_DIR path ends with a trailing slash so rsync copies directory contents
+# rather than creating the root directory itself inside TARGET_DIR.
+SOURCE_DIR="${SOURCE_DIR%/}/"
+
+# ------------------------------------------------------------------------------
+# Locate Previous Backup (for --link-dest)
+# ------------------------------------------------------------------------------
+# Find the most recent existing backup directory inside DEST_DIR (excluding hidden files/dirs)
+LATEST_BACKUP=$(find "${DEST_DIR}" -mindepth 1 -maxdepth 1 -type d ! -name ".*" | sort -r | head -n 1)
+
+RSYNC_FLAGS=(
+  -a                # Archive mode (preserves permissions, timestamps, symlinks, ownership)
+  -v                # Verbose output
+  --delete          # Delete files in backup destination if deleted from source (relative to hard-linked state)
+)
+
+if [[ -n "${LATEST_BACKUP}" ]]; then
+  echo "Found previous backup: ${LATEST_BACKUP}"
+  echo "Performing incremental backup using hard links..."
+  # --link-dest must be relative to TARGET_DIR or an absolute path
+  RSYNC_FLAGS+=("--link-dest=${LATEST_BACKUP}")
+else
+  echo "No existing backups found in '${DEST_DIR}'."
+  echo "Performing initial full backup..."
+fi
+
+# ------------------------------------------------------------------------------
+# Perform Backup
+# ------------------------------------------------------------------------------
+echo "Backing up ${SOURCE_DIR} -> ${TARGET_DIR}"
+
+rsync "${RSYNC_FLAGS[@]}" "${SOURCE_DIR}" "${TARGET_DIR}"
+
+# ------------------------------------------------------------------------------
+# Update 'current' Symlink
+# ------------------------------------------------------------------------------
+echo "Updating 'current' symlink to point to: ${TIMESTAMP}"
+
+# -s: symbolic link
+# -f: force overwrite if target exists
+# -n: treat symlink to a directory as a regular file so it gets replaced instead of linked inside
+ln -sfn "${TIMESTAMP}" "${SYMLINK_PATH}"
+
+echo "Backup completed successfully: ${TARGET_DIR}"

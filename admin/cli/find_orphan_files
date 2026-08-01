@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# Script Name: find_orphan_files.sh
+# Description: Scans a Moodle filedir structure and compares existing physical
+#              files against the contenthash records in the database.
+#              Outputs orphan files (files on disk not registered in Moodle)
+#              and can optionally move them to a quarantine directory.
+#
+# Requirements:
+#   - Database credentials file (~/.credentials/moodle_lom) defining:
+#       DB_USER="your_user"
+#       DB_PASS="your_password"
+#       DB_NAME="your_db_name"
+#       DB_TABLE_PREFIX="mdl"
+#   - Read/write permissions for the Moodle filedir (if moving files).
+#   - MariaDB/MySQL client installed.
+#
+# Usage:
+#   ./find_orphan_files.sh [OPTIONS]
+#
+# Options:
+#   -m, --move           Move orphan files to the quarantine directory.
+#   -n, --dry-run        Simulate moving files without actually moving them.
+#   -q DIR               Set quarantine directory (Default: ~/moodle_lom_orphan).
+#   -d DIR               Set Moodle data directory (Default: ~/moodledata_lom).
+#   -c FILE              Set credentials file (Default: ~/.credentials/moodle_lom).
+#   -h, --help           Show this help message and exit.
+#
+# Examples:
+#   ./find_orphan_files.sh
+#   ./find_orphan_files.sh -m -n
+#   ./find_orphan_files.sh -m -q ~/moodle_lom_orphan
+# ==============================================================================
+
+# Abort immediately if any command fails or if an undefined variable is used
+set -euo pipefail
+
+# Default Configurations
+CRED_FILE="${HOME}/.credentials/moodle_lom"
+MOODLE_DATA_DIR="${HOME}/moodledata_lom"
+QUARANTINE_DIR="${HOME}/moodle_lom_orphan"
+MOVE_FILES=false
+DRY_RUN=false
+
+# Usage Function
+usage() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Options:
+  -m                   Move orphan files to quarantine directory ($QUARANTINE_DIR).
+  -n                   Dry-run mode (simulate file move without executing).
+  -q DIR               Custom quarantine directory (Default: $QUARANTINE_DIR).
+  -d DIR               Custom Moodle data directory (Default: $MOODLE_DATA_DIR).
+  -c FILE              Custom credentials file path (Default: $CRED_FILE).
+  -h                   Show this help message.
+EOF
+    exit 0
+}
+
+# Parse Command Line Options
+while getopts "mnq:d:c:h" opt; do
+    case "$opt" in
+        m) MOVE_FILES=true ;;
+        n) DRY_RUN=true ;;
+        q) QUARANTINE_DIR="$OPTARG" ;;
+        d) MOODLE_DATA_DIR="$OPTARG" ;;
+        c) CRED_FILE="$OPTARG" ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+
+# Validate Credentials File
+if [[ ! -f "$CRED_FILE" ]]; then
+    echo "Error: Credentials file not found at $CRED_FILE" >&2
+    exit 1
+fi
+
+# shellcheck source=/dev/null
+source "$CRED_FILE"
+
+FILE_DIR="${MOODLE_DATA_DIR%/}/filedir"
+
+if [[ ! -d "$FILE_DIR" ]]; then
+    echo "Error: Directory $FILE_DIR does not exist or is not readable." >&2
+    exit 1
+fi
+
+# Dump DB hashes into temporary file, ordered by size descending
+TEMP_HASHES="$(mktemp)"
+TEMP_RESULTS="$(mktemp)"
+trap 'rm -f "$TEMP_HASHES" "$TEMP_RESULTS"' EXIT
+
+echo "Fetching file hashes from database..." >&2
+
+MYSQL_PWD="$DB_PASS" mariadb -u "$DB_USER" -D "$DB_NAME" -B -N \
+    -e "SELECT DISTINCT contenthash FROM ${DB_TABLE_PREFIX}_files;" > "$TEMP_HASHES"
+
+echo "Scanning Moodle file directory for orphan files..." >&2
+# echo "file_path,file_size_kib,status" >> "$TEMP_RESULTS"
+
+# Scan Loop
+for dir1 in "$FILE_DIR"/*/; do
+    [[ -d "$dir1" ]] || continue
+    for dir2 in "$dir1"*/; do
+        [[ -d "$dir2" ]] || continue
+        for file in "$dir2"*; do
+            if [[ -f "$file" ]]; then
+                hash=$(basename "$file")
+
+                # Check if hash is missing from database
+                if ! grep -q -m 1 "^${hash}$" "$TEMP_HASHES"; then
+                    file_size=$(wc -c < "$file")
+                    file_size_kib=$(( file_size / 1024 ))
+
+                    if [[ "$MOVE_FILES" == true || "$DRY_RUN" == true ]]; then
+                        # Extract relative path (e.g. 0a/1b/0a1b...) to mirror structure in quarantine
+                        rel_path="${file#$FILE_DIR/}"
+                        dest_path="${QUARANTINE_DIR%/}/${rel_path}"
+                        dest_dir="$(dirname "$dest_path")"
+
+                        if [[ "$DRY_RUN" == true ]]; then
+                            echo "${file}, ${file_size_kib}, would_move -> ${dest_path}" >> "$TEMP_RESULTS"
+                        else
+                            mkdir -p "$dest_dir"
+                            mv "$file" "$dest_path"
+                            echo "${file}, ${file_size_kib}, moved -> ${dest_path}" >> "$TEMP_RESULTS"
+                        fi
+                    else
+                        echo "${file}, ${file_size_kib}" >> "$TEMP_RESULTS"
+                    fi
+                fi
+            fi
+        done
+    done
+done
+
+
+# Print final CSV header and output sorted by file size (Kibibytes) descending
+echo "file_path,file_size_kib,status"
+if [[ -s "$TEMP_RESULTS" ]]; then
+    sort -t ',' -k 2 -g -r "$TEMP_RESULTS"
+    # sort -rn -k1,1 "$TEMP_RESULTS" | cut -f2-
+fi
