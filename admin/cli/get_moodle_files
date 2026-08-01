@@ -11,13 +11,12 @@
 #       DB_USER="your_user"
 #       DB_PASS="your_password"
 #       DB_NAME="your_db_name"
+#       DB_TABLE_PREFIX="moodle table prefix"
 #
 # Usage:
 #   get_moodle_files                     # Queries '.mbz' files -> mbz_files.txt
 #   get_moodle_files mp4                 # Queries '.mp4' files -> mp4_files.txt
 #   get_moodle_files pdf my_pdfs.txt     # Queries '.pdf' files -> my_pdfs.txt
-#
-# Credit: Bases on script by Ken Task
 # ==============================================================================
 
 # Abort immediately if any command fails or if an undefined variable is used
@@ -25,10 +24,6 @@ set -euo pipefail
 
 # Path to database credentials
 CRED_FILE="/home/finottia/.credentials/moodle_lom"
-
-# Prefix used by Moodle. Find it in config.php, e.g.:
-# $CFG->prefix    = 'mdla0_';
-MOODLE_TABLE_PREFIX="mdla0"
 
 # Validate Credentials File
 if [ ! -f "$CRED_FILE" ]; then
@@ -46,7 +41,7 @@ EXTENSION="${1:-mbz}"
 DEST_FILE="${2:-${EXTENSION}_files.txt}"
 
 # SQL Query Construction
-QUERY="SELECT id, contenthash, filename, filearea, filesize, userid FROM ${MOODLE_TABLE_PREFIX}_files WHERE filename LIKE '%.${EXTENSION}' ORDER BY filesize DESC;"
+QUERY="SELECT id, contenthash, filename, filearea, filesize, userid FROM ${DB_TABLE_PREFIX}_files WHERE filename LIKE '%.${EXTENSION}' ORDER BY filesize DESC;"
 
 echo "Querying database '$DB_NAME' for *.${EXTENSION} files..."
 
